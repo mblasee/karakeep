@@ -3,13 +3,14 @@ import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
 
 import manifest from "./manifest.json";
+import { applyForkManifest } from "./src/fork/manifest";
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
     react(),
     crx({
-      manifest,
+      manifest: applyForkManifest(manifest),
       browser: process.env.VITE_BUILD_FIREFOX ? "firefox" : "chrome",
     }),
   ],

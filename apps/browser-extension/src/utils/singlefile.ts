@@ -2,21 +2,27 @@
  * Utilities for SingleFile integration
  */
 
+import type { CaptureOptions } from "../fork/captureOptions";
+import { injectSingleFileHooks } from "../fork/hooks";
 import { getPluginSettings } from "./settings";
-
-const CAPTURE_TIMEOUT_MS = 60_000;
 
 /**
  * Capture the current page using SingleFile
  */
 export async function capturePageWithSingleFile(
   tabId: number,
-  opts: { includeImages: boolean },
+  opts: { includeImages: boolean; capture: CaptureOptions },
 ): Promise<string> {
   const blockImages = !opts.includeImages;
+  if (!blockImages && opts.capture.loadDeferredImages) {
+    // Best-effort: without the hooks, lazy images just won't be forced.
+    await injectSingleFileHooks(tabId).catch((e) =>
+      console.warn("Failed to inject SingleFile hooks:", e),
+    );
+  }
   let response;
   try {
-    response = await sendCaptureMessage(tabId, blockImages);
+    response = await sendCaptureMessage(tabId, blockImages, opts.capture);
   } catch (e) {
     // Content script not yet present in the tab (e.g. page loaded before the
     // extension was installed or the browser was restarted). Inject on demand
@@ -28,7 +34,7 @@ export async function capturePageWithSingleFile(
       throw e;
     }
     await injectSingleFileContentScript(tabId);
-    response = await sendCaptureMessage(tabId, blockImages);
+    response = await sendCaptureMessage(tabId, blockImages, opts.capture);
   }
 
   if (!response.success) {
@@ -41,16 +47,22 @@ export async function capturePageWithSingleFile(
 async function sendCaptureMessage(
   tabId: number,
   blockImages: boolean,
+  capture: CaptureOptions,
 ): Promise<{ success: boolean; html: string; error?: string }> {
+  const timeoutMs = capture.captureTimeoutSec * 1000;
   return await Promise.race([
-    chrome.tabs.sendMessage(tabId, { type: "CAPTURE_PAGE", blockImages }),
+    chrome.tabs.sendMessage(tabId, {
+      type: "CAPTURE_PAGE",
+      blockImages,
+      capture,
+    }),
     new Promise<never>((_, reject) =>
       setTimeout(
         () =>
           reject(
-            new Error(`Capture timed out after ${CAPTURE_TIMEOUT_MS / 1000}s`),
+            new Error(`Capture timed out after ${capture.captureTimeoutSec}s`),
           ),
-        CAPTURE_TIMEOUT_MS,
+        timeoutMs,
       ),
     ),
   ]);

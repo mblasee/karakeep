@@ -9,6 +9,13 @@ import {
 } from "@karakeep/shared/types/bookmarks";
 
 import { NEW_BOOKMARK_REQUEST_KEY_NAME } from "./background/protocol";
+import { toCaptureOptions } from "./fork/captureOptions";
+import {
+  attachAssetToBookmark,
+  captureRedditJson,
+  redditJsonUrl,
+} from "./fork/reddit";
+import { withCaptureBridge } from "./fork/captureBridge";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -137,9 +144,13 @@ export default function SavePage() {
     ) {
       try {
         setIsCapturing(true);
-        const html = await capturePageWithSingleFile(currentTabId, {
-          includeImages: settings.singleFileIncludeImages,
-        });
+        const tabId = currentTabId;
+        const html = await withCaptureBridge(() =>
+          capturePageWithSingleFile(tabId, {
+            includeImages: settings.singleFileIncludeImages,
+            capture: toCaptureOptions(settings.fork),
+          }),
+        );
         const precrawledArchiveId = await uploadSingleFileAsset(
           html,
           bookmark.title ?? undefined,
@@ -153,10 +164,43 @@ export default function SavePage() {
         setIsCapturing(false);
       }
     }
-    createBookmark({
-      ...finalBookmark,
-      source: finalBookmark.source || "extension",
-    });
+    // Fork: on Reddit posts, grab the post's JSON with the user's session.
+    let redditAssetId: string | null = null;
+    if (
+      settings.fork.redditJsonAttachment &&
+      currentTabId !== undefined &&
+      bookmark.type === BookmarkTypes.LINK &&
+      bookmark.url === currentTabUrl &&
+      redditJsonUrl(bookmark.url)
+    ) {
+      try {
+        setIsCapturing(true);
+        redditAssetId = await captureRedditJson(
+          currentTabId,
+          bookmark.url,
+          bookmark.title ?? undefined,
+        );
+      } catch (e) {
+        console.warn("Reddit JSON capture failed, saving without it:", e);
+      } finally {
+        setIsCapturing(false);
+      }
+    }
+    createBookmark(
+      {
+        ...finalBookmark,
+        source: finalBookmark.source || "extension",
+      },
+      {
+        onSuccess: (created) => {
+          if (redditAssetId) {
+            attachAssetToBookmark(created.id, redditAssetId).catch((e) =>
+              console.warn("Failed to attach Reddit JSON:", e),
+            );
+          }
+        },
+      },
+    );
   };
 
   // Auto-save when settings are loaded and we have a pending bookmark

@@ -1,6 +1,8 @@
 import React from "react";
 import { z } from "zod";
 
+import { DEFAULT_FORK_SETTINGS, zForkSettingsField } from "../fork/settings";
+
 export const DEFAULT_BADGE_CACHE_EXPIRE_MS = 60 * 60 * 1000; // 1 hour
 export const DEFAULT_SHOW_COUNT_BADGE = false;
 
@@ -16,6 +18,7 @@ const zSettingsSchema = z.object({
   useSingleFile: z.boolean().default(false),
   singleFileIncludeImages: z.boolean().default(true),
   autoSave: z.boolean().default(true),
+  fork: zForkSettingsField,
 });
 
 const DEFAULT_SETTINGS: Settings = {
@@ -29,6 +32,7 @@ const DEFAULT_SETTINGS: Settings = {
   useSingleFile: false,
   singleFileIncludeImages: true,
   autoSave: true,
+  fork: DEFAULT_FORK_SETTINGS,
 };
 
 export type Settings = z.infer<typeof zSettingsSchema>;

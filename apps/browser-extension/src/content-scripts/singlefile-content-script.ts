@@ -4,6 +4,11 @@
 
 import { getPageData, init } from "single-file-core/single-file.js";
 
+import type { CaptureOptions } from "../fork/captureOptions";
+import { buildSingleFileOptions } from "../fork/captureOptions";
+import { extensionFetch } from "../fork/captureBridge";
+import { DEFAULT_FORK_SETTINGS } from "../fork/settings";
+
 declare global {
   interface Window {
     __karakeepSingleFileLoaded__?: boolean;
@@ -17,11 +22,15 @@ if (window.__karakeepSingleFileLoaded__) {
 }
 window.__karakeepSingleFileLoaded__ = true;
 
-init({});
+// Fork: download resources through the extension (no page CORS limits).
+init({ fetch: extensionFetch, frameFetch: extensionFetch });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "CAPTURE_PAGE") {
-    captureCurrentPage({ blockImages: message.blockImages === true })
+    captureCurrentPage({
+      blockImages: message.blockImages === true,
+      capture: message.capture ?? DEFAULT_FORK_SETTINGS,
+    })
       .then((html) => sendResponse({ success: true, html }))
       .catch((error) =>
         sendResponse({
@@ -36,27 +45,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 async function captureCurrentPage(opts: {
   blockImages: boolean;
+  capture: CaptureOptions;
 }): Promise<string> {
   const pageData = await getPageData(
-    {
-      removeHiddenElements: true,
-      removeUnusedStyles: true,
-      removeUnusedFonts: true,
-      compressHTML: true,
-      blockScripts: true,
-      blockImages: opts.blockImages,
-      // When images are blocked, SingleFile wipes `srcset` and skips `src`
-      // rewriting. Ask it to stash the originals on `data-sf-original-*` so
-      // we can restore them below.
-      saveOriginalURLs: opts.blockImages,
-      removeFrames: true,
-      removeAlternativeFonts: true,
-      removeAlternativeMedias: true,
-      removeAlternativeImages: true,
-      groupDuplicateImages: true,
-      maxResourceSizeEnabled: true,
-      maxResourceSize: 10,
-    },
+    buildSingleFileOptions(opts.capture, opts.blockImages),
     {},
     document,
     window,

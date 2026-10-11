@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
+import { ForkCaptureOptions, ForkRedditOptions } from "./fork/ForkOptions";
 import Logo from "./Logo";
 import Spinner from "./Spinner";
 import {
@@ -195,6 +196,9 @@ export default function OptionsPage() {
           />
         </div>
       )}
+      {clientSideCrawlingEnabled && <ForkCaptureOptions />}
+      <hr />
+      <ForkRedditOptions />
       <hr />
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium">Auto-save on open</span>
