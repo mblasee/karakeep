@@ -1,0 +1,35 @@
+# Fork: build and lint the Firefox add-on without installing Node or pnpm.
+#
+#   docker compose -f compose.fork.yaml run --rm build
+#
+# Output (unsigned, for testing in desktop Firefox via about:debugging):
+#   apps/browser-extension/fork-out/dist-firefox/
+#   apps/browser-extension/fork-out/artifacts/*.zip
+#
+# Runs as the image's `node` user (uid 1000), so created files belong to uid
+# 1000 on the host. The named volume keeps pnpm's download cache between runs.
+services:
+  build:
+    image: node:24-bookworm
+    user: node
+    working_dir: /src
+    environment:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      PUPPETEER_SKIP_DOWNLOAD: "true"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "true"
+      VITE_BUILD_FIREFOX: "true"
+    volumes:
+      - .:/src
+      - node-home:/home/node
+    command:
+      - bash
+      - -euc
+      - |
+        corepack pnpm install --frozen-lockfile --filter "@karakeep/browser-extension..."
+        cd apps/browser-extension
+        corepack pnpm run build --outDir fork-out/dist-firefox
+        npx --yes web-ext@10 lint --source-dir fork-out/dist-firefox
+        npx --yes web-ext@10 build --source-dir fork-out/dist-firefox --artifacts-dir fork-out/artifacts --overwrite-dest
+
+volumes:
+  node-home:

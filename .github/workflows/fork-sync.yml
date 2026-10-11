@@ -1,0 +1,89 @@
+# Fork: keep this fork's patch on top of the newest upstream extension release.
+#
+# Upstream tags every browser-extension release as `extension/vX.Y.Z`. The
+# `fork-base` tag in this repo marks the upstream release the patch currently
+# sits on. When a newer release appears, `main` is rebased onto it and pushed;
+# that push triggers fork-release.yml.
+#
+# GitHub doesn't deliver events from someone else's repository, so this has to
+# check on a schedule.
+#
+# Requires the FORK_PUSH_TOKEN secret: a fine-grained token for this repo with
+# "Contents: read and write" and "Workflows: read and write" (pushing upstream
+# commits that touch .github/workflows is refused for the default token, and
+# pushes made with the default token don't trigger other workflows).
+
+name: Fork sync
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  UPSTREAM_URL: https://github.com/karakeep-app/karakeep.git
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.FORK_PUSH_TOKEN }}
+
+      - name: Rebase onto the newest upstream extension release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream '+refs/tags/extension/v*:refs/tags/extension/v*'
+          latest=$(git tag -l 'extension/v*' | sort -V | tail -n1)
+          echo "Newest upstream extension release: $latest"
+
+          if ! git rev-parse -q --verify 'refs/tags/fork-base' >/dev/null; then
+            echo "::error::Tag 'fork-base' is missing. Create it on the upstream commit your patch is based on."
+            exit 1
+          fi
+
+          if [ "$(git rev-parse 'fork-base^{commit}')" = "$(git rev-parse "$latest^{commit}")" ]; then
+            echo "Already based on $latest, nothing to do."
+            exit 0
+          fi
+
+          if ! git rebase --onto "$latest" fork-base main; then
+            git rebase --abort
+            title="Fork sync: conflict rebasing onto $latest"
+            if [ -z "$(gh issue list --state open --search "in:title \"$title\"" --json number -q '.[].number')" ]; then
+              gh issue create --title "$title" --body "The fork patch no longer applies cleanly on top of \`$latest\`.
+
+          Resolve locally:
+          \`\`\`
+          git fetch upstream --no-tags '+refs/tags/extension/v*:refs/tags/extension/v*'
+          git rebase --onto $latest fork-base main
+          # fix conflicts, git add, git rebase --continue
+          git tag -f fork-base $latest
+          git push --force-with-lease origin main
+          git push --force origin refs/tags/fork-base refs/tags/$latest
+          \`\`\`"
+            fi
+            exit 1
+          fi
+
+          git tag -f fork-base "$latest"
+          git push --force-with-lease origin main
+          git push --force origin refs/tags/fork-base "refs/tags/$latest"
+          echo "Rebased onto $latest; the push to main starts a release."

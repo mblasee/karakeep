@@ -1,0 +1,108 @@
+# Fork: build the Firefox add-on, have Mozilla sign it (unlisted / self-
+# distributed), and publish the signed .xpi as a GitHub release.
+#
+# Runs on every push to main (your own changes, or fork-sync.yml rebasing onto
+# a new upstream release) and on demand.
+#
+# Secrets:  AMO_JWT_ISSUER, AMO_JWT_SECRET  (addons.mozilla.org API keys)
+# Variable: SINGLEFILE_CORE_VERSION         (optional, e.g. "latest" or "1.6.28";
+#                                            unset = keep upstream's pinned version)
+
+name: Fork release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup (upstream's own setup action)
+        uses: ./tooling/github/setup
+
+      - name: Use a different single-file-core version
+        if: vars.SINGLEFILE_CORE_VERSION != ''
+        run: pnpm --filter @karakeep/browser-extension add "single-file-core@${{ vars.SINGLEFILE_CORE_VERSION }}"
+
+      - name: Set version and update URL
+        id: meta
+        working-directory: apps/browser-extension
+        run: |
+          set -euo pipefail
+          base=$(jq -r .version manifest.json)
+          version="$base.${{ github.run_number }}"
+          update_url="https://github.com/${{ github.repository }}/releases/latest/download/updates.json"
+          jq --arg v "$version" --arg u "$update_url" \
+            '.version = $v | .browser_specific_settings.gecko.update_url = $u' \
+            manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+          {
+            echo "version=$version"
+            echo "upstream=$(git tag --points-at fork-base --list 'extension/v*' | head -n1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: apps/browser-extension
+        env:
+          VITE_BUILD_FIREFOX: "true"
+        run: pnpm run build --outDir fork-out/dist-firefox
+
+      - name: Lint with Mozilla's add-on linter
+        working-directory: apps/browser-extension
+        # --self-hosted: update_url is fine for unlisted add-ons.
+        run: npx --yes web-ext@10 lint --self-hosted --source-dir fork-out/dist-firefox
+
+      - name: Package source code for Mozilla's review
+        run: |
+          set -euo pipefail
+          # Tracked files as they are in the working tree, so the version stamp
+          # and any single-file-core change are included. Build steps for the
+          # reviewer are in apps/browser-extension/FORK.md.
+          git ls-files -z | xargs -0 zip -q -X "$RUNNER_TEMP/source.zip"
+
+      - name: Sign (unlisted)
+        working-directory: apps/browser-extension
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          npx --yes web-ext@10 sign \
+            --source-dir fork-out/dist-firefox \
+            --artifacts-dir "$RUNNER_TEMP/signed" \
+            --channel unlisted \
+            --upload-source-code "$RUNNER_TEMP/source.zip" \
+            --approval-timeout 3600000
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          UPSTREAM: ${{ steps.meta.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          # The fork's ID is merged in at build time, so read the built manifest.
+          ADDON_ID=$(jq -r .browser_specific_settings.gecko.id apps/browser-extension/fork-out/dist-firefox/manifest.json)
+          xpi="karakeep-fork-$VERSION.xpi"
+          mv "$RUNNER_TEMP"/signed/*.xpi "$RUNNER_TEMP/$xpi"
+          link="https://github.com/${{ github.repository }}/releases/download/v$VERSION/$xpi"
+          hash="sha256:$(sha256sum "$RUNNER_TEMP/$xpi" | cut -d' ' -f1)"
+          jq -n --arg id "$ADDON_ID" --arg v "$VERSION" --arg l "$link" --arg h "$hash" \
+            '{addons: {($id): {updates: [{version: $v, update_link: $l, update_hash: $h}]}}}' \
+            > "$RUNNER_TEMP/updates.json"
+          gh release create "v$VERSION" \
+            "$RUNNER_TEMP/$xpi" "$RUNNER_TEMP/updates.json" \
+            --title "v$VERSION" \
+            --notes "Signed by Mozilla (unlisted). Based on upstream \`$UPSTREAM\`, commit ${GITHUB_SHA::7}." \
+            --latest
