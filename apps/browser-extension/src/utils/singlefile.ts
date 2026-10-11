@@ -3,6 +3,7 @@
  */
 
 import type { CaptureOptions } from "../fork/captureOptions";
+import { expectContentScriptReady } from "../fork/contentScriptReady";
 import { injectSingleFileHooks } from "../fork/hooks";
 import { getPluginSettings } from "./settings";
 
@@ -33,7 +34,10 @@ export async function capturePageWithSingleFile(
     ) {
       throw e;
     }
-    await injectSingleFileContentScript(tabId);
+    await injectSingleFileContentScript(
+      tabId,
+      opts.capture.captureTimeoutSec * 1000,
+    );
     response = await sendCaptureMessage(tabId, blockImages, opts.capture);
   }
 
@@ -68,7 +72,10 @@ async function sendCaptureMessage(
   ]);
 }
 
-async function injectSingleFileContentScript(tabId: number): Promise<void> {
+async function injectSingleFileContentScript(
+  tabId: number,
+  timeoutMs: number,
+): Promise<void> {
   const contentScripts = chrome.runtime.getManifest().content_scripts;
   const files = contentScripts?.find((cs) =>
     cs.js?.some((f) => f.includes("singlefile-content-script")),
@@ -80,6 +87,8 @@ async function injectSingleFileContentScript(tabId: number): Promise<void> {
   // `executeScript({ files })` — which loads as a classic script — fails.
   // Use a dynamic import in the isolated world instead.
   const urls = files.map((f) => chrome.runtime.getURL(f));
+  // Fork: listen for the script's "ready" before injecting it.
+  const started = expectContentScriptReady(tabId, timeoutMs);
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
     func: async (moduleUrls: string[]) => {
@@ -101,10 +110,17 @@ async function injectSingleFileContentScript(tabId: number): Promise<void> {
   // Treat the re-entry guard as success — the listener is already registered
   // from a concurrent injection, so the retried sendMessage will succeed.
   if (!res || (!res.ok && !res.error?.includes("already loaded"))) {
+    started.cancel();
     throw new Error(
       `Failed to inject SingleFile content script: ${res?.error ?? "unknown error"}`,
     );
   }
+  if (!res.ok) {
+    started.cancel(); // already loaded: its listener exists
+    return;
+  }
+  // The injected loader returns before the real script runs; wait for it.
+  await started.ready;
 }
 
 /**

@@ -7,6 +7,7 @@ import { getPageData, init } from "single-file-core/single-file.js";
 import type { CaptureOptions } from "../fork/captureOptions";
 import { buildSingleFileOptions } from "../fork/captureOptions";
 import { extensionFetch } from "../fork/captureBridge";
+import { announceContentScriptReady } from "../fork/contentScriptReady";
 import { DEFAULT_FORK_SETTINGS } from "../fork/settings";
 
 declare global {
@@ -42,6 +43,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 });
+
+// Fork: tell the popup the listener is registered (see contentScriptReady.ts).
+announceContentScriptReady();
 
 async function captureCurrentPage(opts: {
   blockImages: boolean;
